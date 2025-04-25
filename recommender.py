@@ -73,7 +73,7 @@ class FestivalRecommender:
         try:
             if self.tfidf_matrix is None or self.festival_data.empty:
                 logger.warning("모델 또는 데이터 없음, 추천 불가")
-                return [{"userid": user['userid'], "festivalRecommendations": [{"eventid": None}]} for user in user_data]
+                return [{"userid": user['userid'], "festivalRecommendations": [{"eventid": []}]} for user in user_data]
             recommendations = []
             for user in user_data:
                 user_id = user.get('userid', 'unknown')
