@@ -37,7 +37,7 @@ class EventInput(BaseModel):
     title: str
     category: str
     location: str
-    description: str | None = None  # null 허용
+    description: str | None = None
 
     @validator('description', pre=True)
     def handle_null_description(cls, v):
@@ -59,11 +59,10 @@ def add_events_to_csv(events: List[dict]):
             df = pd.read_csv(CSV_FILE, encoding='utf-8', encoding_errors='ignore')
         
         new_data = pd.DataFrame(events)
-        new_data['description'] = new_data['description'].fillna('')  # null/NaN을 ""로 변환
-        # eventid 중복 처리: 기존 데이터에서 동일 eventid 제거
+        new_data['description'] = new_data['description'].fillna('')
         df = df[~df['eventid'].isin(new_data['eventid'])]
         df = pd.concat([df, new_data], ignore_index=True)
-        df = df.fillna('')  # 모든 컬럼의 NaN을 ""로 변환
+        df = df.fillna('')
         df.to_csv(CSV_FILE, index=False, encoding='utf-8')
         logger.debug(f"CSV에 {len(events)}개 이벤트 추가 완료, 총 행: {len(df)}")
     except Exception as e:
@@ -86,13 +85,17 @@ async def health_check():
     logger.debug("헬스 체크 요청")
     return {"status": "ok"}
 
+@app.get("/event-sync")
+async def event_sync_get():
+    logger.warning("GET /event-sync 요청 수신, POST 메서드만 지원")
+    raise HTTPException(status_code=405, detail="Method Not Allowed: Use POST for /event-sync")
+
 @app.post("/event-sync")
 async def add_events(events: List[EventInput]):
     logger.debug("이벤트 추가 요청 수신")
     try:
         events_dict = [event.dict() for event in events]
         add_events_to_csv(events_dict)
-        # 모델 재학습
         from model_train import train_model
         train_model(CSV_FILE, MODEL_FILE)
         return {"status": "success", "added_events": len(events_dict)}
@@ -100,6 +103,11 @@ async def add_events(events: List[EventInput]):
         logger.error(f"이벤트 추가 실패: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"이벤트 추가 실패: {str(e)}")
+
+@app.get("/recommned")
+async def recommend_misspelled():
+    logger.warning("GET /recommned 요청 수신, /recommend로 수정 필요")
+    raise HTTPException(status_code=404, detail="Not Found: Did you mean /recommend?")
 
 @app.post("/recommend")
 async def recommend_festivals(users: List[UserInput]):
@@ -116,7 +124,7 @@ async def recommend_festivals(users: List[UserInput]):
         
         user_data = [user.dict() for user in users]
         logger.debug(f"사용자 데이터: {user_data}")
-        recs = recommender.recommend(user_data, top_n=5)
+        recs = recommender.recommend(user_data)  # top_n 제거
         logger.debug(f"추천 결과: {recs}")
         return recs
     except FileNotFoundError as e:
