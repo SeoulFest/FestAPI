@@ -54,10 +54,11 @@ class FestivalRecommender:
                 pd.DataFrame(columns=['eventid', 'title', 'category', 'location', 'description']).to_csv(csv_file, index=False, encoding='utf-8')
             existing_df = pd.read_csv(csv_file, encoding='utf-8')
             new_df = pd.DataFrame(events)
-            new_df['description'] = new_df['description'].fillna('')  # null을 ""로 변환
+            new_df['description'] = new_df['description'].fillna('')
             if not existing_df.empty:
                 existing_df = existing_df[~existing_df['eventid'].isin(new_df['eventid'])]
             updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+            updated_df = updated_df.fillna('')
             updated_df.to_csv(csv_file, index=False, encoding='utf-8')
             logger.debug(f"CSV에 {len(events)}개 이벤트 추가 완료, 총 행: {len(updated_df)}")
             self.fit(updated_df)
@@ -67,7 +68,7 @@ class FestivalRecommender:
             logger.error(f"이벤트 추가 실패: {str(e)}")
             raise
 
-    def recommend(self, user_data):
+    def recommend(self, user_data, top_n=5):
         logger.debug(f"사용자 데이터: {user_data}")
         try:
             if self.tfidf_matrix is None or self.festival_data.empty:
@@ -84,7 +85,7 @@ class FestivalRecommender:
                     continue
                 user_tfidf = self.vectorizer.transform([user_features])
                 similarities = cosine_similarity(user_tfidf, self.tfidf_matrix).flatten()
-                top_indices = similarities.argsort()[-5:][::-1]
+                top_indices = similarities.argsort()[-top_n:][::-1]
                 top_event_ids = self.festival_data.iloc[top_indices]['eventid'].astype(str).tolist()
                 recommendations.append({
                     "userid": user_id,
