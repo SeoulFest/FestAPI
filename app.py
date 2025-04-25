@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, validator
 from typing import List
 import pandas as pd
@@ -10,19 +10,20 @@ import sys
 from recommender import FestivalRecommender
 from scheduler import start_scheduler
 
-# 로깅 설정
+# 로깅 설정 (중복 방지)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('FestivalRecommender')
-logger.setLevel(logging.DEBUG)
+
+# 기존 핸들러 제거 후 새로운 핸들러 추가
+logger.handlers.clear()
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-    logger.addHandler(console_handler)
+logger.addHandler(console_handler)
 file_handler = logging.FileHandler('app.log')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
-    logger.addHandler(file_handler)
+logger.addHandler(file_handler)
 
 # 스케줄러 시작 플래그
 scheduler_started = False
@@ -43,10 +44,24 @@ class EventInput(BaseModel):
     def handle_null_description(cls, v):
         return "" if v is None else v
 
-app = FastAPI(title="Festival Recommender API")
+app = FastAPI(title="Festival Recommender API", docs_url=None, redoc_url=None)
 
 MODEL_FILE = 'festival_recommender.pkl'
 CSV_FILE = 'eventlist.csv'
+
+# 미들웨어: 요청 로깅 및 중복 요청 체크
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    client_ip = request.client.host
+    method = request.method
+    path = request.url.path
+    logger.info(f"요청 수신: {method} {path} from {client_ip}")
+    
+    if method == "GET" and path in ["/recommned", "/event-sync"]:
+        logger.warning(f"잘못된 요청: {method} {path} from {client_ip}")
+    
+    response = await call_next(request)
+    return response
 
 def add_events_to_csv(events: List[dict]):
     logger.debug("CSV에 이벤트 추가 시작")
@@ -124,7 +139,7 @@ async def recommend_festivals(users: List[UserInput]):
         
         user_data = [user.dict() for user in users]
         logger.debug(f"사용자 데이터: {user_data}")
-        recs = recommender.recommend(user_data)  # top_n 제거
+        recs = recommender.recommend(user_data)
         logger.debug(f"추천 결과: {recs}")
         return recs
     except FileNotFoundError as e:
