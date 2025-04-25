@@ -1,13 +1,14 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import List
+import pandas as pd
 import joblib
 import os
 import logging
 import traceback
 import sys
 from recommender import FestivalRecommender
-import uvicorn
+from scheduler import start_scheduler
 
 # 로깅 설정
 logger = logging.getLogger('FestivalRecommender')
@@ -15,25 +16,90 @@ logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(console_handler)
+if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+    logger.addHandler(console_handler)
 file_handler = logging.FileHandler('app.log')
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+    logger.addHandler(file_handler)
+
+# 스케줄러 시작 플래그
+scheduler_started = False
 
 class UserInput(BaseModel):
     userid: str
     searchHistory: List[str]
     favorites: List[str]
 
+class EventInput(BaseModel):
+    eventid: int
+    title: str
+    category: str
+    location: str
+    description: str | None = None  # null 허용
+
+    @validator('description', pre=True)
+    def handle_null_description(cls, v):
+        return "" if v is None else v
+
 app = FastAPI(title="Festival Recommender API")
 
 MODEL_FILE = 'festival_recommender.pkl'
+CSV_FILE = 'eventlist.csv'
+
+def add_events_to_csv(events: List[dict]):
+    logger.debug("CSV에 이벤트 추가 시작")
+    try:
+        if not os.path.exists(CSV_FILE):
+            logger.info(f"CSV 파일 없음, 새로 생성: {CSV_FILE}")
+            df = pd.DataFrame(columns=['eventid', 'title', 'category', 'location', 'description'])
+            df.to_csv(CSV_FILE, index=False, encoding='utf-8')
+        else:
+            df = pd.read_csv(CSV_FILE, encoding='utf-8', encoding_errors='ignore')
+        
+        new_data = pd.DataFrame(events)
+        new_data['description'] = new_data['description'].fillna('')  # null/NaN을 ""로 변환
+        # eventid 중복 처리: 기존 데이터에서 동일 eventid 제거
+        df = df[~df['eventid'].isin(new_data['eventid'])]
+        df = pd.concat([df, new_data], ignore_index=True)
+        df = df.fillna('')  # 모든 컬럼의 NaN을 ""로 변환
+        df.to_csv(CSV_FILE, index=False, encoding='utf-8')
+        logger.debug(f"CSV에 {len(events)}개 이벤트 추가 완료, 총 행: {len(df)}")
+    except Exception as e:
+        logger.error(f"CSV 이벤트 추가 실패: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+@app.on_event("startup")
+async def startup_event():
+    global scheduler_started
+    if not scheduler_started:
+        logger.info("FastAPI 서버 시작, 스케줄러 초기화")
+        start_scheduler()
+        scheduler_started = True
+    else:
+        logger.debug("스케줄러 이미 시작됨")
 
 @app.get("/health")
 async def health_check():
     logger.debug("헬스 체크 요청")
     return {"status": "ok"}
+
+@app.post("/event-sync")
+async def add_events(events: List[EventInput]):
+    logger.debug("이벤트 추가 요청 수신")
+    try:
+        events_dict = [event.dict() for event in events]
+        add_events_to_csv(events_dict)
+        # 모델 재학습
+        from model_train import train_model
+        train_model(CSV_FILE, MODEL_FILE)
+        return {"status": "success", "added_events": len(events_dict)}
+    except Exception as e:
+        logger.error(f"이벤트 추가 실패: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"이벤트 추가 실패: {str(e)}")
 
 @app.post("/recommend")
 async def recommend_festivals(users: List[UserInput]):
@@ -65,8 +131,3 @@ async def recommend_festivals(users: List[UserInput]):
         logger.error(f"추천 실패: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
-
-if __name__ == "__main__":
-    logger.info("FastAPI 서버 시작")
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
